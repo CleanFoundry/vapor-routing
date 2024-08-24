@@ -7,12 +7,14 @@ extension Application {
   ///
   /// - Parameters:
   ///   - router: A parser-printer that works on inputs of `URLRequestData`.
+  ///   - middleware: A closure for providing any per-route migrations to be run before processing the request.
   ///   - closure: A closure that takes a `Request` and the router's output as arguments.
   public func mount<R: Parser>(
     _ router: R,
+    middleware: @escaping (R.Output) -> Middleware? = { _ in nil },
     use closure: @escaping (Request, R.Output) async throws -> AsyncResponseEncodable
   ) where R.Input == URLRequestData {
-    self.middleware.use(AsyncRoutingMiddleware(router: router, respond: closure))
+    self.middleware.use(AsyncRoutingMiddleware(router: router, middleware: middleware, respond: closure))
   }
 }
 
@@ -25,6 +27,7 @@ extension Application {
 public struct AsyncRoutingMiddleware<Router: Parser>: AsyncMiddleware
 where Router.Input == URLRequestData {
   let router: Router
+  let middleware: (Router.Output) -> Middleware?
   let respond: (Request, Router.Output) async throws -> AsyncResponseEncodable
 
   public func respond(
@@ -55,6 +58,15 @@ where Router.Input == URLRequestData {
         return Response(status: .notFound, body: .init(string: "Routing \(routingError)"))
       }
     }
-    return try await self.respond(request, route).encodeResponse(for: request)
+    if let middleware = middleware(route) {
+      return try await middleware.respond(
+        to: request,
+        chainingTo: AsyncBasicResponder { request in
+          return try await self.respond(request, route).encodeResponse(for: request)
+        }
+      ).get()
+    } else {
+      return try await self.respond(request, route).encodeResponse(for: request)
+    }
   }
 }
